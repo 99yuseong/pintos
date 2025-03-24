@@ -589,6 +589,14 @@ allocate_tid (void)
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 
+bool is_less_awake_ticks(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+    struct thread *thread_a = list_entry(a, struct thread, elem);
+    struct thread *thread_b = list_entry(b, struct thread, elem);
+    
+    return thread_a->awake_ticks < thread_b->awake_ticks;
+}
+
 void
 thread_sleep(int64_t ticks)
 {
@@ -602,7 +610,7 @@ thread_sleep(int64_t ticks)
   if (cur != idle_thread)
   {
     cur->awake_ticks = ticks;
-    list_push_back (&sleep_list, &cur->elem);
+    list_insert_ordered(&sleep_list, &cur->elem, is_less_awake_ticks, NULL);
     thread_block();
   }
 
@@ -619,11 +627,9 @@ thread_awake(int64_t ticks)
     struct thread *sleeping_thread = list_entry(cur_elem, struct thread, elem);
     
     if (sleeping_thread->awake_ticks > ticks)
-      cur_elem = list_next (cur_elem);
-    else
-    {
-      cur_elem = list_remove(cur_elem);
-      thread_unblock(sleeping_thread);  
-    }
+      break;
+      
+    cur_elem = list_remove(cur_elem);
+    thread_unblock(sleeping_thread);  
   }
 }
