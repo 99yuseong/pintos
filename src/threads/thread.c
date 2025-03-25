@@ -598,7 +598,7 @@ bool is_less_awake_ticks(const struct list_elem *a, const struct list_elem *b, v
 }
 
 void
-thread_sleep(int64_t ticks)
+thread_sleep (int64_t ticks)
 {
   struct thread *cur = thread_current();
   enum intr_level old_level;
@@ -618,18 +618,16 @@ thread_sleep(int64_t ticks)
 }
 
 void
-thread_awake(int64_t ticks)
+thread_awake (int64_t ticks)
 {
-  struct list_elem *cur_elem = list_begin(&sleep_list);
-
-  while (cur_elem != list_end(&sleep_list))
+  while (!list_empty(&sleep_list))
   {
-    struct thread *sleeping_thread = list_entry(cur_elem, struct thread, elem);
-    
+    struct thread *sleeping_thread = list_entry(list_front(&sleep_list), struct thread, elem);
+
     if (sleeping_thread->awake_ticks > ticks)
-      break;
-      
-    cur_elem = list_remove(cur_elem);
-    thread_unblock(sleeping_thread);  
+      return;
+    
+    list_pop_front(&sleep_list);
+    thread_unblock(sleeping_thread);
   }
 }
