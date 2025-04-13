@@ -73,6 +73,9 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+bool is_high_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+void thread_check_preemption (void);
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -211,6 +214,7 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  thread_check_preemption();
 
   return tid;
 }
@@ -248,9 +252,9 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered(&ready_list, &t->elem, is_high_priority, NULL);
   t->status = THREAD_READY;
-  intr_set_level (old_level);
+  intr_set_level(old_level);
 }
 
 /* Returns the name of the running thread. */
@@ -319,7 +323,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    list_insert_ordered(&ready_list, &cur->elem, is_high_priority, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -347,6 +351,7 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+  thread_check_preemption();
 }
 
 /* Returns the current thread's priority. */
@@ -494,7 +499,7 @@ alloc_frame (struct thread *t, size_t size)
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
 static struct thread *
-next_thread_to_run (void) 
+next_thread_to_run (void)
 {
   if (list_empty (&ready_list))
     return idle_thread;
@@ -589,12 +594,22 @@ allocate_tid (void)
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 
-bool is_less_awake_ticks(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+bool 
+is_less_awake_ticks(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
 {
     struct thread *thread_a = list_entry(a, struct thread, elem);
     struct thread *thread_b = list_entry(b, struct thread, elem);
     
     return thread_a->awake_ticks < thread_b->awake_ticks;
+}
+
+bool 
+is_high_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+{
+    struct thread *thread_a = list_entry(a, struct thread, elem);
+    struct thread *thread_b = list_entry(b, struct thread, elem);
+    
+    return thread_a->priority > thread_b->priority;
 }
 
 void
@@ -629,5 +644,19 @@ thread_awake (int64_t ticks)
     
     list_pop_front(&sleep_list);
     thread_unblock(sleeping_thread);
+  }
+}
+
+void
+thread_check_preemption (void)
+{
+  if (list_empty(&ready_list))
+    return;
+
+  struct thread *current = thread_current();
+  struct thread *front = list_entry(list_front(&ready_list), struct thread, elem);
+
+  if (front->priority > current->priority) {
+    thread_yield();
   }
 }
