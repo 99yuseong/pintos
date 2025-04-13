@@ -143,4 +143,7 @@ int thread_get_load_avg (void);
 void thread_sleep (int64_t ticks);
 void thread_awake (int64_t ticks);
 
+bool thread_high_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+void thread_check_preemption (void);
+
 #endif /* threads/thread.h */

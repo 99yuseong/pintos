@@ -73,7 +73,7 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
-bool is_high_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool thread_high_priority (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 void thread_check_preemption (void);
 
 /* Initializes the threading system by transforming the code
@@ -252,7 +252,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_insert_ordered(&ready_list, &t->elem, is_high_priority, NULL);
+  list_insert_ordered(&ready_list, &t->elem, thread_high_priority, NULL);
   t->status = THREAD_READY;
   intr_set_level(old_level);
 }
@@ -323,7 +323,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_insert_ordered(&ready_list, &cur->elem, is_high_priority, NULL);
+    list_insert_ordered(&ready_list, &cur->elem, thread_high_priority, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -604,7 +604,7 @@ is_less_awake_ticks(const struct list_elem *a, const struct list_elem *b, void *
 }
 
 bool 
-is_high_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
+thread_high_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED)
 {
     struct thread *thread_a = list_entry(a, struct thread, elem);
     struct thread *thread_b = list_entry(b, struct thread, elem);
