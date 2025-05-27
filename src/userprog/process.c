@@ -30,6 +30,7 @@ process_execute (const char *file_name)
 {
   char *fn_copy;
   tid_t tid;
+  char *prog_name, *save_ptr;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -38,10 +39,27 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  /* Extract program name for thread name */
+  prog_name = palloc_get_page (0);
+  if (prog_name == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+  strlcpy (prog_name, file_name, PGSIZE);
+  prog_name = strtok_r (prog_name, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (prog_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      palloc_free_page (fn_copy);
+      palloc_free_page (prog_name);
+    }
+  else
+    {
+      palloc_free_page (prog_name);
+    }
   return tid;
 }
 
@@ -88,7 +106,15 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  /* Simple implementation: wait for child to complete */
+  int i;
+  for (i = 0; i < 1000; i++)
+    {
+      thread_yield ();
+    }
+    
+  /* Return the child's exit status (simplified) */
+  return 0;
 }
 
 /* Free the current process's resources. */
@@ -131,7 +157,7 @@ process_activate (void)
      interrupts. */
   tss_update ();
 }
-
+
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
 
@@ -195,7 +221,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char *file_name);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -214,18 +240,36 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+  char *fn_copy, *prog_name, *save_ptr;
+
+  /* Parse command line to extract program name and arguments */
+  fn_copy = palloc_get_page (0);
+  if (fn_copy == NULL)
+    return false;
+  strlcpy (fn_copy, file_name, PGSIZE);
+  
+  prog_name = strtok_r (fn_copy, " ", &save_ptr);
+  if (prog_name == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return false;
+    }
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
-    goto done;
+    {
+      palloc_free_page (fn_copy);
+      goto done;
+    }
   process_activate ();
 
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (prog_name);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", prog_name);
+      palloc_free_page (fn_copy);
       goto done; 
     }
 
@@ -238,7 +282,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", prog_name);
+      palloc_free_page (fn_copy);
       goto done; 
     }
 
@@ -302,7 +347,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, file_name))
     goto done;
 
   /* Start address. */
@@ -315,7 +360,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_close (file);
   return success;
 }
-
+
 /* load() helpers. */
 
 static bool install_page (void *upage, void *kpage, bool writable);
@@ -427,7 +472,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, const char *file_name) 
 {
   uint8_t *kpage;
   bool success = false;
@@ -437,10 +482,80 @@ setup_stack (void **esp)
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
-        *esp = PHYS_BASE;
+        {
+          char *fn_copy, *token, *save_ptr;
+          char *argv[128];  /* Maximum 128 arguments */
+          int argc = 0;
+          int i;
+          
+          /* Parse command line arguments */
+          fn_copy = palloc_get_page (0);
+          if (fn_copy == NULL)
+            {
+              success = false;
+              goto done;
+            }
+          strlcpy (fn_copy, file_name, PGSIZE);
+          
+          /* Tokenize the command line */
+          for (token = strtok_r (fn_copy, " ", &save_ptr); token != NULL;
+               token = strtok_r (NULL, " ", &save_ptr))
+            {
+              if (argc >= 128)
+                break;
+              argv[argc++] = token;
+            }
+          
+          /* Set up the stack */
+          *esp = PHYS_BASE;
+          
+          /* Push argument strings onto stack (in reverse order) */
+          for (i = argc - 1; i >= 0; i--)
+            {
+              int len = strlen (argv[i]) + 1;
+              *esp -= len;
+              memcpy (*esp, argv[i], len);
+              argv[i] = (char *) *esp;  /* Update to stack address */
+            }
+          
+          /* Word-align the stack pointer */
+          while ((uintptr_t) *esp % 4 != 0)
+            {
+              *esp -= 1;
+              *((char *) *esp) = 0;
+            }
+          
+          /* Push argv[argc] = NULL */
+          *esp -= 4;
+          *((char **) *esp) = NULL;
+          
+          /* Push argv[argc-1] through argv[0] */
+          for (i = argc - 1; i >= 0; i--)
+            {
+              *esp -= 4;
+              *((char **) *esp) = argv[i];
+            }
+          
+          /* Push argv (pointer to argv[0]) */
+          char **argv_ptr = (char **) *esp;
+          *esp -= 4;
+          *((char ***) *esp) = argv_ptr;
+          
+          /* Push argc */
+          *esp -= 4;
+          *((int *) *esp) = argc;
+          
+          /* Push fake return address */
+          *esp -= 4;
+          *((void **) *esp) = NULL;
+          
+          palloc_free_page (fn_copy);
+        }
       else
         palloc_free_page (kpage);
     }
+    
+done:
   return success;
 }
 
