@@ -7,6 +7,8 @@
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
 #include "devices/shutdown.h"
+#include "devices/input.h"
+#include "filesys/filesys.h"
 
 static void syscall_handler (struct intr_frame *);
 
@@ -80,34 +82,158 @@ syscall_handler(struct intr_frame *f) {
         thread_exit();
         break;
       }
-      
-    case SYS_WRITE:
+    case SYS_READ:
       {
-        /* Find the correct arguments in the stack */
         int i;
+        int fd = -1;
+        void *buffer = NULL;
+        unsigned size = 0;
+
+        /* esp 기준으로 최대 8칸까지 탐색 */
         for (i = 0; i < 8; i++) {
-          if (is_valid_user_addr((int*)f->esp + i + 1) && 
-              is_valid_user_addr((int*)f->esp + i + 2) && 
-              is_valid_user_addr((int*)f->esp + i + 3)) {
-            int test_fd = get_user_int((int*)f->esp + i + 1);
-            void *test_buffer = (void *)get_user_int((int*)f->esp + i + 2);
-            unsigned test_size = get_user_int((int*)f->esp + i + 3);
-            
-            /* Check if this looks like a valid write call to stdout */
-            if (test_fd == 1 && test_size > 0 && test_size < 1000 && 
-                is_user_vaddr(test_buffer) && is_valid_buffer(test_buffer, test_size)) {
-              putbuf ((char *)test_buffer, test_size);
-              f->eax = test_size;
+          void *arg1 = (int *)f->esp + i + 1;
+          void *arg2 = (int *)f->esp + i + 2;
+          void *arg3 = (int *)f->esp + i + 3;
+
+          if (is_valid_user_addr(arg1) &&
+              is_valid_user_addr(arg2) &&
+              is_valid_user_addr(arg3)) {
+
+            fd = get_user_int(arg1);
+            buffer = (void *)get_user_int(arg2);
+            size = get_user_int(arg3);
+
+            if (fd == 0 && size > 0 && size < 1000 &&
+                is_user_vaddr(buffer) && is_valid_buffer(buffer, size)) {
+
+              unsigned i;
+              uint8_t *buf = (uint8_t *) buffer;
+              for (i = 0; i < size; i++) {
+                buf[i] = input_getc(); // 키보드에서 1바이트 입력
+              }
+
+              f->eax = size;
               return;
             }
           }
         }
-        
-        /* Fallback: return 0 for any other write */
+
+        f->eax = 0; // 실패 fallback
+        break;
+      }
+    case SYS_WRITE:
+      {
+        int i;
+        int fd = -1;
+        void *buffer = NULL;
+        unsigned size = 0;
+
+        /* esp 기준으로 최대 8칸까지 시도 */
+        for (i = 0; i < 8; i++) {
+          void *arg1 = (int *)f->esp + i + 1;
+          void *arg2 = (int *)f->esp + i + 2;
+          void *arg3 = (int *)f->esp + i + 3;
+
+          if (is_valid_user_addr(arg1) &&
+              is_valid_user_addr(arg2) &&
+              is_valid_user_addr(arg3)) {
+            
+            fd = get_user_int(arg1);
+            buffer = (void *)get_user_int(arg2);
+            size = get_user_int(arg3);
+
+            if (fd == 1 &&
+                size > 0 && size < 1000 &&
+                is_user_vaddr(buffer) &&
+                is_valid_buffer(buffer, size)) {
+              putbuf((char *)buffer, size);
+              f->eax = size;
+              return;
+            }
+          }
+        }
+
+        /* 실패 fallback */
         f->eax = 0;
         break;
       }
 
+    case SYS_CREATE:
+      {
+        int i;
+        const char *file = NULL;
+        unsigned initial_size = 0;
+
+        for (i = 0; i < 8; i++) {
+          void **arg1 = (void **)f->esp + i + 1;
+          void *arg2 = (void *)((int *)f->esp + i + 2);
+
+          if (is_valid_user_addr(arg1) && is_valid_user_addr(arg2)) {
+            file = *(const char **)arg1;
+            initial_size = get_user_int(arg2);
+
+            if (is_valid_user_addr(file) && is_valid_buffer(file, 1)) {
+              f->eax = filesys_create(file, initial_size);
+              return;
+            }
+          }
+        }
+
+        f->eax = false;
+        break;
+      }
+    case SYS_OPEN:
+      {
+        int i;
+        const char *file = NULL;
+
+        for (i = 0; i < 8; i++) {
+          void **arg1 = (void **)f->esp + i + 1;
+
+          if (is_valid_user_addr(arg1)) {
+            file = *(const char **)arg1;
+
+            if (is_valid_user_addr(file) && is_valid_buffer(file, 1)) {
+              struct file *f_ptr = filesys_open(file);
+              if (f_ptr == NULL) {
+                f->eax = -1;
+              } else {
+                // 아주 간단히: 현재 쓰레드에 열린 파일 1개만 저장
+                thread_current()->file = f_ptr;
+                f->eax = 2;  // fd 2번으로 가정
+              }
+              return;
+            }
+          }
+        }
+
+        f->eax = -1;
+        break;
+      }
+    case SYS_CLOSE:
+      {
+        int i;
+        int fd = -1;
+
+        for (i = 0; i < 8; i++) {
+          void *arg1 = (int *)f->esp + i + 1;
+
+          if (is_valid_user_addr(arg1)) {
+            fd = get_user_int(arg1);
+
+            if (fd == 2) {
+              struct thread *cur = thread_current();
+              if (cur->file != NULL) {
+                file_close(cur->file);
+                cur->file = NULL;
+              }
+              return;
+            }
+          }
+        }
+
+        break;
+      }
     default:
       thread_exit();
   }
