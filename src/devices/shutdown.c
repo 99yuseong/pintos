@@ -109,7 +109,7 @@ shutdown_power_off (void)
     outw(0x8004, 0x2000);
     outb (0x8900, *p);
   }
-  
+
   /* This will power off a VMware VM if "gui.exitOnCLIHLT = TRUE"
      is set in its configuration file.  (The "pintos" script does
      that automatically.)  */
